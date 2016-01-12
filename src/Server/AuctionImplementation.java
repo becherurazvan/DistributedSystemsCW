@@ -2,9 +2,7 @@ package Server;
 
 import java.rmi.RemoteException;
 
-/**
- * Created by becheru on 12/01/2016.
- */
+
 public class AuctionImplementation  extends java.rmi.server.UnicastRemoteObject implements  SellerInterface,BidderInterface {
 
     public AuctionImplementation() throws RemoteException {

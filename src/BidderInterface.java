@@ -1,5 +1,6 @@
 import javax.crypto.SealedObject;
 import java.rmi.RemoteException;
+import java.security.SignedObject;
 
 /**
  * Created by becheru on 12/01/2016.
@@ -8,7 +9,7 @@ public interface BidderInterface extends java.rmi.Remote  {
 
 
     // check if the bid is actually done by whoever says is doing the bid,  maybe change the rest of the values to a SignedObject
-    public String bid(int bidderId, int auctionId, double amount) throws RemoteException;
+    public String bid(SignedObject requesterId, int auctionId, double amount) throws RemoteException;
 
     public String getAllAuctions() throws RemoteException;
 

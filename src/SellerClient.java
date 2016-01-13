@@ -16,6 +16,7 @@ import java.security.*;
 public class SellerClient {
 
     SellerInterface serverInterface;
+    BidderInterface bidderInterface;
     String id="1";
 
     SecretKey sessionKey;
@@ -25,14 +26,20 @@ public class SellerClient {
 
     public SellerClient() throws Exception {
         init();
-        addAuction("encrypted auction",10,100);
-
-        Thread.sleep(4000);
-        cancelAuction(1);
 
 
+        //Thread.sleep(4000);
 
+        System.out.println(bidderInterface.getAllAuctions());
 
+        bid(4,5);
+    }
+
+    public void bid(int auctionId, double value) throws Exception {
+        Signature signature = Signature.getInstance("SHA1withRSA");
+        signature.initSign(KeyUtil.getPrivateKey("3"));
+        SignedObject signedId = new SignedObject(id,KeyUtil.getPrivateKey("3"),signature);
+        System.out.println(bidderInterface.bid(signedId, auctionId, value));
     }
 
     public void addAuction(String itemName, double startingPrice, double minimumPrice){
@@ -51,11 +58,13 @@ public class SellerClient {
         try {
 
 
-            Cipher cipher  = Cipher.getInstance(sessionKey.getAlgorithm());
-            cipher.init(Cipher.ENCRYPT_MODE, sessionKey);
-            SealedObject sealedId = new SealedObject(auctionId,cipher);
+            Signature signature = Signature.getInstance("SHA1withRSA");
+            signature.initSign(myPrivateKey);
 
-            System.out.println("Trying to cancel auction with id " + auctionId + " --- " + serverInterface.cancelAuction(sealedId,auctionId));
+
+            SignedObject signedId = new SignedObject(auctionId,myPrivateKey,signature);
+            System.out.println("Trying to cancel auction with id " + auctionId + " --- " + serverInterface.cancelAuction(signedId, auctionId));
+
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -71,6 +80,7 @@ public class SellerClient {
         serverPublicKey = KeyUtil.getPublicKey(KeyUtil.SERVER_KEY_NAME);
         System.out.println("Loaded servers PublicKey");
         serverInterface = (SellerInterface) Naming.lookup("rmi://localhost/AuctionServer");
+        bidderInterface = (BidderInterface) Naming.lookup("rmi://localhost/AuctionServer");
         System.out.println("Connected To The Server");
         rnd = new SecureRandom();
         doTheHandshake();

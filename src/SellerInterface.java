@@ -1,5 +1,6 @@
 import javax.crypto.SealedObject;
 import java.rmi.RemoteException;
+import java.security.SignedObject;
 
 /**
  * Created by becheru on 12/01/2016.
@@ -13,9 +14,9 @@ public interface SellerInterface extends java.rmi.Remote  {
 
     //cancel a listing if the message is signed with the private key of the user
     //identified by that requester id
-    public String cancelAuction(SealedObject sealedRequesterId, int auctionId) throws RemoteException;  // TO DO
+    public String cancelAuction(SignedObject signedRequesterId, int auctionId) throws RemoteException;  // Done
 
-    public String getAllAuctions() throws RemoteException;
+    public String getAllAuctions() throws RemoteException; // DONE
 
 
     // method to be called when you want to challange the server to prove that it is the actual server

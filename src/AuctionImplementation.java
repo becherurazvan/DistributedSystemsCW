@@ -12,9 +12,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.rmi.RemoteException;
-import java.security.InvalidKeyException;
-import java.security.NoSuchAlgorithmException;
-import java.security.PublicKey;
+import java.security.*;
 import java.util.HashMap;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -23,18 +21,18 @@ import java.util.concurrent.atomic.AtomicInteger;
  * Created by becheru on 12/01/2016.
  */
 public class AuctionImplementation extends java.rmi.server.UnicastRemoteObject
-        implements  SellerInterface,BidderInterface, Receiver {
+        implements SellerInterface, BidderInterface, Receiver {
 
     JChannel channel;
     MuxRpcDispatcher dispatcher;
     Replica r;
 
-    HashMap<String,SecretKey> sessionKeys;
-    HashMap<String,ServerChallange> waitingToSolve;
+    HashMap<String, SecretKey> sessionKeys;
+    HashMap<String, ServerChallange> waitingToSolve;
 
     AtomicInteger auctionIdCounter;
 
-    public AuctionImplementation() throws RemoteException{
+    public AuctionImplementation() throws RemoteException {
         sessionKeys = new HashMap<>();
         waitingToSolve = new HashMap<>();
         auctionIdCounter = new AtomicInteger(1);
@@ -45,13 +43,15 @@ public class AuctionImplementation extends java.rmi.server.UnicastRemoteObject
             channel.setName("FrontEnd");
             channel.connect("Server");
 
-            dispatcher = new MuxRpcDispatcher((short)1,channel, this,this,this);
-            RspList rspList = dispatcher.callRemoteMethods(null, "getAuction", new Object[]{}, new Class[]{}, new RequestOptions(ResponseMode.GET_FIRST, 5000));
-            int counter = (int)rspList.getFirst(); // in case the front end stops, but replicas are not, the id counter, restart the server with the latest id counter from replicas
-            // so that you dont override replica's existent auctions
-            if(counter>1)
-            {
-                auctionIdCounter.set(counter);
+            dispatcher = new MuxRpcDispatcher((short) 1, channel, this, this, this);
+            RspList rspList = dispatcher.callRemoteMethods(null, "getIdCounter", new Object[]{}, new Class[]{}, new RequestOptions(ResponseMode.GET_FIRST, 5000));
+            if (rspList.getFirst() != null) {
+                int counter = (int) rspList.getFirst(); // in case the front end stops, but replicas are not, the id counter, restart the server with the latest id counter from replicas
+                // so that you dont override replica's existent auctions
+                if (counter > 1) {
+                    auctionIdCounter.set(counter + 1);
+                    System.out.println("Got the counter from a replplica " + (counter + 1));
+                }
             }
 
 
@@ -60,47 +60,82 @@ public class AuctionImplementation extends java.rmi.server.UnicastRemoteObject
         }
 
 
+    }
 
+    @Override
+    public String bid(SignedObject requesterId, int auctionId, double amount) throws RemoteException {
 
-
-
-        /*
         try {
-            r = new Replica();
+            String userId = (String)requesterId.getObject();
+            PublicKey requesterPublikKey = KeyUtil.getPublicKey(userId);
+            Signature signature = Signature.getInstance("SHA1withRSA");
+            signature.initVerify(requesterPublikKey);
+            boolean isTheRequesterVerified = requesterId.verify(requesterPublikKey, signature);
+
+            if (!isTheRequesterVerified)
+                return "Bidding unsuccesful, Message is signed with a different key, you cannot bid in someone else's name";
+
+
+
+            RspList responseList = dispatcher.callRemoteMethods(null, "bid", new Object[]{auctionId, amount,Integer.parseInt(userId)}, new Class[]{int.class,double.class,int.class}, new RequestOptions(ResponseMode.GET_ALL, 5000));
+
+            if (responseList.size() == 0)
+                return logCrash();
+
+            HashMap<String, Integer> majority = new HashMap<>(); // hold all the responses, and how many of each.
+
+            Set<Address> addresses = responseList.keySet();
+            for (Address addr : addresses) {
+                String response = (String) responseList.get(addr).getValue();
+
+                if (majority.containsKey(response))
+                    majority.put(response, majority.get(response) + 1);
+                else
+                    majority.put(response, 1);
+
+            }
+            String majorityResponse = "";
+            int maxShowups = 0;
+            for (String s : majority.keySet()) {
+                if (majority.get(s) > maxShowups) {
+                    maxShowups = majority.get(s);
+                    majorityResponse = s;
+                }
+            }
+            return majorityResponse;
+
+
+
+
         } catch (Exception e) {
             e.printStackTrace();
         }
-           */
+        return "Bidding unsuccesful, request was badly formatated";
 
     }
 
     @Override
-    public String bid(int bidderId, int auctionId, double amount) throws RemoteException {
-        return r.bid(auctionId,amount,bidderId);
-    }
-
-    @Override
-    public String createListing(String userId,SealedObject sealedAuction) throws RemoteException {
+    public String createListing(String userId, SealedObject sealedAuction) throws RemoteException {
         p(userId + " is trying to create an Auction");
 
 
         // TO DO discard if auction has an set ID, it has been tempered with
-        if(!sessionKeys.containsKey(userId)){
+        if (!sessionKeys.containsKey(userId)) {
             System.out.println(userId + " is not authenticated, ignoring the request");
             return "You are not authenticated";
         }
 
         SecretKey sessionKey = sessionKeys.get(userId);
-        Auction a=null;
+        Auction a = null;
         try {
             Cipher cipher = Cipher.getInstance(sessionKey.getAlgorithm());
-            cipher.init(Cipher.DECRYPT_MODE,sessionKey);
+            cipher.init(Cipher.DECRYPT_MODE, sessionKey);
             a = (Auction) sealedAuction.getObject(cipher);
 
-            if(a.isIdSet()){
+            if (a.isIdSet()) {
                 System.out.println("The auction has been tempered with, discarded");
                 return "The auction has been tempered with, dont set an id";
-            }else{
+            } else {
                 a.setId(auctionIdCounter.getAndAdd(1));
             }
 
@@ -124,15 +159,14 @@ public class AuctionImplementation extends java.rmi.server.UnicastRemoteObject
 
 
         try {
-            RspList rspList =  dispatcher.callRemoteMethods(null, "addAuction", new Object[]{a}, new Class[]{Auction.class}, new RequestOptions(ResponseMode.GET_ALL, 5000));
+            RspList rspList = dispatcher.callRemoteMethods(null, "addAuction", new Object[]{a}, new Class[]{Auction.class}, new RequestOptions(ResponseMode.GET_ALL, 5000));
             Set<Address> addresses = rspList.keySet();
-            for(Address addr:addresses){
-                Boolean response = (Boolean)rspList.get(addr).getValue();
+            for (Address addr : addresses) {
+                Boolean response = (Boolean) rspList.get(addr).getValue();
 
             }
-            if(rspList.size()==0)
+            if (rspList.size() == 0)
                 return logCrash();
-
 
 
         } catch (Exception e) {
@@ -140,64 +174,64 @@ public class AuctionImplementation extends java.rmi.server.UnicastRemoteObject
         }
 
 
-        if(a!=null)
-            return "Succefully added an acution with id "+a.getId();
+        if (a != null)
+            return "Succefully added an acution with id " + a.getId();
         else
             return "An error has occured";
 
-       // return "Succefully added an acution with id : " + r.addAuction(a);
+        // return "Succefully added an acution with id : " + r.addAuction(a);
     }
-
 
 
     //TO DO FIX
     @Override
-    public String cancelAuction(SealedObject sealedId, int auctionId) throws RemoteException {
+    public String cancelAuction(SignedObject signedId, int auctionId) throws RemoteException {
 
         try {
             RspList rspList = dispatcher.callRemoteMethods(null, "getAuction", new Object[]{auctionId}, new Class[]{int.class}, new RequestOptions(ResponseMode.GET_FIRST, 5000));
-            Auction a = (Auction)rspList.getFirst();
+            Auction a = (Auction) rspList.getFirst();
             int trueOwner = a.getOwnerId();
             System.out.println("Someone is trying to close auction " + auctionId + " , the true owner is " + trueOwner);
 
 
             System.err.println("Trying to get the session key of the user with id " + trueOwner + " \n " + sessionKeys.keySet());
-            SecretKey trueOwnerSessionKey = sessionKeys.get(String.valueOf(trueOwner));
-            Cipher cipher = Cipher.getInstance(trueOwnerSessionKey.getAlgorithm());
-            cipher.init(Cipher.DECRYPT_MODE,trueOwnerSessionKey);
-            int requesterId = (Integer) sealedId.getObject(cipher);
-            if(requesterId == trueOwner){
-                System.out.println("The requester is the true owner, stoping the auction "+ a.getItemName());
-                RspList responseList =  dispatcher.callRemoteMethods(null, "closeAuction", new Object[]{requesterId, auctionId}, new Class[]{int.class, int.class}, new RequestOptions(ResponseMode.GET_ALL, 5000));
+            PublicKey trueOwnerPublicKey = KeyUtil.getPublicKey(String.valueOf(trueOwner));
 
-                if(rspList.size()==0)
+            Signature signature = Signature.getInstance("SHA1withRSA");
+            signature.initVerify(trueOwnerPublicKey);
+            boolean isTheRequesterTheOwner = signedId.verify(trueOwnerPublicKey, signature);
+
+            if (isTheRequesterTheOwner) {
+                System.out.println("The requester is the true owner, stoping the auction " + a.getItemName());
+                RspList responseList = dispatcher.callRemoteMethods(null, "closeAuction", new Object[]{trueOwner, auctionId}, new Class[]{int.class, int.class}, new RequestOptions(ResponseMode.GET_ALL, 5000));
+
+                if (rspList.size() == 0)
                     return logCrash();
 
-                HashMap<String,Integer> majority = new HashMap<>(); // hold all the responses, and how many of each.
+                HashMap<String, Integer> majority = new HashMap<>(); // hold all the responses, and how many of each.
 
                 Set<Address> addresses = responseList.keySet();
-                for(Address addr:addresses){
-                    String response = (String)responseList.get(addr).getValue();
+                for (Address addr : addresses) {
+                    String response = (String) responseList.get(addr).getValue();
 
-                    if(majority.containsKey(response))
+                    if (majority.containsKey(response))
                         majority.put(response, majority.get(response) + 1);
                     else
                         majority.put(response, 1);
 
                 }
                 String majorityResponse = "";
-                int maxShowups =0;
-                for(String s:majority.keySet()){
-                    if(majority.get(s)>maxShowups){
+                int maxShowups = 0;
+                for (String s : majority.keySet()) {
+                    if (majority.get(s) > maxShowups) {
                         maxShowups = majority.get(s);
-                        majorityResponse =s;
+                        majorityResponse = s;
                     }
                 }
                 return majorityResponse;
 
 
-
-            }else{
+            } else {
                 System.out.println("The requester is not the owner");
                 return "You are not the owner of this auction";
             }
@@ -211,7 +245,16 @@ public class AuctionImplementation extends java.rmi.server.UnicastRemoteObject
 
     @Override
     public String getAllAuctions() throws RemoteException {
-        return r.getAuctionList();
+
+        RspList rspList = null;
+        try {
+            rspList = dispatcher.callRemoteMethods(null, "getAuctionList", new Object[]{}, new Class[]{}, new RequestOptions(ResponseMode.GET_FIRST, 5000));
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        String a = (String) rspList.getFirst();
+
+        return a;
     }
 
 
@@ -222,7 +265,7 @@ public class AuctionImplementation extends java.rmi.server.UnicastRemoteObject
     public SealedObject challangeServer(String id, SealedObject challange) throws RemoteException {
 
         PublicKey challangerPublicKey = KeyUtil.getPublicKey(id);
-        if(challangerPublicKey==null){ // if the id making the request is not known
+        if (challangerPublicKey == null) { // if the id making the request is not known
             System.err.println("ATENTION!::::: unknown user trying to challange you");
             return null;
         }
@@ -231,8 +274,8 @@ public class AuctionImplementation extends java.rmi.server.UnicastRemoteObject
 
         try { // try to solve the challange
             Cipher decryptCipher = Cipher.getInstance(Server.serverPrivateKey.getAlgorithm());
-            decryptCipher.init(Cipher.DECRYPT_MODE,Server.serverPrivateKey);
-            answerToChallange = (String)challange.getObject(decryptCipher);
+            decryptCipher.init(Cipher.DECRYPT_MODE, Server.serverPrivateKey);
+            answerToChallange = (String) challange.getObject(decryptCipher);
             System.out.println(">>>>>>>>>>>>" + answerToChallange);
         } catch (Exception e) {
             e.printStackTrace();
@@ -242,18 +285,17 @@ public class AuctionImplementation extends java.rmi.server.UnicastRemoteObject
 
         ServerChallange serverChallange = new ServerChallange(answerToChallange); // create a response for the challanger that is made of the answer to his challange, a challange for him, and a session key
 
-        waitingToSolve.put(id,serverChallange);
+        waitingToSolve.put(id, serverChallange);
 
         SealedObject response = null;
         try {
             Cipher encryptCipher = Cipher.getInstance(challangerPublicKey.getAlgorithm());
             encryptCipher.init(Cipher.ENCRYPT_MODE, challangerPublicKey);
-            response= new SealedObject(serverChallange,encryptCipher);
+            response = new SealedObject(serverChallange, encryptCipher);
 
         } catch (Exception e) {
             e.printStackTrace();
         }
-
 
 
         return response;
@@ -264,18 +306,18 @@ public class AuctionImplementation extends java.rmi.server.UnicastRemoteObject
 
 
         ServerChallange challange = waitingToSolve.get(id);
-        if(challange==null){
+        if (challange == null) {
             System.out.println("::::: Client trying to solve a challange that does not exist");
             return false;
         }
 
         try {
             Cipher decryptCipher = Cipher.getInstance(challange.getSessionKey().getAlgorithm());
-            decryptCipher.init(Cipher.DECRYPT_MODE,challange.getSessionKey());
-            String answer = (String)response.getObject(decryptCipher);
-            if(answer.equals(challange.getChallangeForClient())){
+            decryptCipher.init(Cipher.DECRYPT_MODE, challange.getSessionKey());
+            String answer = (String) response.getObject(decryptCipher);
+            if (answer.equals(challange.getChallangeForClient())) {
                 System.out.println("Client's identity confirmed");
-                sessionKeys.put(id,challange.getSessionKey());
+                sessionKeys.put(id, challange.getSessionKey());
                 waitingToSolve.remove(id);
                 return true;
             }
@@ -288,13 +330,11 @@ public class AuctionImplementation extends java.rmi.server.UnicastRemoteObject
     }
 
 
-
     ////////////////////////////////////////////////////////////
 
 
-
-    public void p(String msg){
-        System.out.println("> AuctionImplementation : "  +msg);
+    public void p(String msg) {
+        System.out.println("> AuctionImplementation : " + msg);
     }
 
     @Override
@@ -304,16 +344,16 @@ public class AuctionImplementation extends java.rmi.server.UnicastRemoteObject
         System.out.println("___________________________________");
     }
 
-    public String logCrash(){
+    public String logCrash() {
 
-            System.err.println("*********************************************************************");
-            System.err.println("*********************************************************************");
-            System.err.println("*********************************************************************");
-            System.err.println("************ALL REPLICAS HAVE CRASHED OR ARE NOT RESPONDING**********");
-            System.err.println("***********************THE SERVER HAS FAILED*************************");
-            System.err.println("*********************************************************************");
-            System.err.println("*********************************************************************");
-            return "Server is down!";
+        System.err.println("*********************************************************************");
+        System.err.println("*********************************************************************");
+        System.err.println("*********************************************************************");
+        System.err.println("************ALL REPLICAS HAVE CRASHED OR ARE NOT RESPONDING**********");
+        System.err.println("***********************THE SERVER HAS FAILED*************************");
+        System.err.println("*********************************************************************");
+        System.err.println("*********************************************************************");
+        return "Server is down!";
 
     }
 

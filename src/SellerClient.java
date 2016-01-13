@@ -9,15 +9,14 @@ import java.rmi.Naming;
 import java.rmi.NotBoundException;
 import java.rmi.RemoteException;
 import java.security.*;
+import java.util.List;
 
 /**
  * Created by becheru on 12/01/2016.
  */
-public class SellerClient {
+public class SellerClient extends Client {
 
     SellerInterface serverInterface;
-    BidderInterface bidderInterface;
-    String id="1";
 
     SecretKey sessionKey;
     PublicKey serverPublicKey;
@@ -25,36 +24,81 @@ public class SellerClient {
     private SecureRandom rnd;
 
     public SellerClient() throws Exception {
-        init();
-
-
-        //Thread.sleep(4000);
-
-        System.out.println(bidderInterface.getAllAuctions());
-
-        bid(4,5);
+        super();
     }
 
-    public void bid(int auctionId, double value) throws Exception {
-        Signature signature = Signature.getInstance("SHA1withRSA");
-        signature.initSign(KeyUtil.getPrivateKey("3"));
-        SignedObject signedId = new SignedObject(id,KeyUtil.getPrivateKey("3"),signature);
-        System.out.println(bidderInterface.bid(signedId, auctionId, value));
-    }
+    @Override
+    protected void inputDetected(List<String> input) {
+        switch (input.get(0)) {
+            case "add_auction":
+                if (input.size() < 3 || input.size() > 4) {
+                    System.err.println("Wrong formating e.g. add_auction name starting_price minimum_price(optional)");
+                    break;
+                }
 
-    public void addAuction(String itemName, double startingPrice, double minimumPrice){
-        try {
-            Auction a = new Auction(itemName,startingPrice,minimumPrice, ConvertUtils.getAsInt(id));
-            Cipher cipher  = Cipher.getInstance(sessionKey.getAlgorithm());
-            cipher.init(Cipher.ENCRYPT_MODE,sessionKey);
-            SealedObject sealedAuction = new SealedObject(a,cipher);
-            System.out.println(serverInterface.createListing(id,sealedAuction));
-        } catch (Exception e) {
-            e.printStackTrace();
+                if (!isDouble(input.get(2)))
+                    System.err.println(input.get(2) + " --> starting price needs to be a number");
+                else if (input.size() > 3 && !isDouble(input.get(3)))
+                    System.err.println(input.get(3) + " --> minimum price needs to be a number");
+                else {
+
+                    if (input.size() > 3 && Double.parseDouble(input.get(3)) < Double.parseDouble(input.get(2))) {
+                        System.err.println("Minimum price cannot be lower than starting price, you can just not add it");
+                        break;
+                    }
+                    if (input.size() > 3) {
+                        String response = addAuction(input.get(1), Double.parseDouble(input.get(2)), Double.parseDouble(input.get(3)));
+                        System.out.println(response);
+                    } else {
+                        String response = addAuction(input.get(1), Double.parseDouble(input.get(2)), Double.parseDouble(input.get(2))); // if no min price is set, set it to starting price
+                        System.out.println(response);
+                    }
+                }
+
+                break;
+            case "close_auction":
+
+                if (input.size() < 2 || input.size() > 2) {
+                    System.err.println("Wrong formating e.g. close_auction auctionId");
+                    break;
+                }
+                if (!isInt(input.get(1))) {
+                    System.err.println(input.get(1) + " --> auction id must be a number");
+                    break;
+                }
+                String response = cancelAuction(Integer.parseInt(input.get(1)));
+                System.out.println(response);
+                break;
+            case "list_auctions":
+                try {
+                    System.out.println(serverInterface.getAllAuctions());
+                } catch (RemoteException e) {
+                    e.printStackTrace();
+                }
+                break;
+            default:
+                System.err.println("No such command, try: add_auction -name -starting price -minimum price , close_auction -auction id, list_auctions");
+
         }
     }
 
-    public void cancelAuction(int auctionId){ // encrypt my ID, only I could have encrypted it with the key that is asociated on the server side with the key of the id of the owner.
+    public String addAuction(String itemName, double startingPrice, double minimumPrice) {
+        String response = "No response";
+        try {
+            Auction a = new Auction(itemName, startingPrice, minimumPrice, ConvertUtils.getAsInt(id));
+            Cipher cipher = Cipher.getInstance(sessionKey.getAlgorithm());
+            cipher.init(Cipher.ENCRYPT_MODE, sessionKey);
+            SealedObject sealedAuction = new SealedObject(a, cipher);
+            response = serverInterface.createListing(id, sealedAuction);
+
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return response;
+    }
+
+    public String cancelAuction(int auctionId) { // encrypt my ID, only I could have encrypted it with the key that is asociated on the server side with the key of the id of the owner.
+        String response = "";
         try {
 
 
@@ -62,17 +106,18 @@ public class SellerClient {
             signature.initSign(myPrivateKey);
 
 
-            SignedObject signedId = new SignedObject(auctionId,myPrivateKey,signature);
-            System.out.println("Trying to cancel auction with id " + auctionId + " --- " + serverInterface.cancelAuction(signedId, auctionId));
+            SignedObject signedId = new SignedObject(auctionId, myPrivateKey, signature);
+            response = "Trying to cancel auction with id " + auctionId + " --- " + serverInterface.cancelAuction(signedId, auctionId);
 
         } catch (Exception e) {
             e.printStackTrace();
         }
+        return response;
     }
 
-    public void init() throws Exception{
-        myPrivateKey = KeyUtil.getPrivateKey("1");
-        if(myPrivateKey==null){
+    public void init() throws Exception {
+        myPrivateKey = KeyUtil.getPrivateKey(id);
+        if (myPrivateKey == null) {
             System.out.println("User not registered");
             System.exit(1);
         }
@@ -80,46 +125,40 @@ public class SellerClient {
         serverPublicKey = KeyUtil.getPublicKey(KeyUtil.SERVER_KEY_NAME);
         System.out.println("Loaded servers PublicKey");
         serverInterface = (SellerInterface) Naming.lookup("rmi://localhost/AuctionServer");
-        bidderInterface = (BidderInterface) Naming.lookup("rmi://localhost/AuctionServer");
         System.out.println("Connected To The Server");
         rnd = new SecureRandom();
         doTheHandshake();
     }
 
-    public void doTheHandshake(){
-        String challange = new BigInteger(128,rnd).toString(32); //
-        System.out.println("Challange for server "+challange);
+    public void doTheHandshake() {
+        String challange = new BigInteger(128, rnd).toString(32); //
+        System.out.println("Challange for server " + challange);
 
         try {
             Cipher challangeEncryptCipher = Cipher.getInstance(serverPublicKey.getAlgorithm());
-            challangeEncryptCipher.init(Cipher.ENCRYPT_MODE,serverPublicKey);
+            challangeEncryptCipher.init(Cipher.ENCRYPT_MODE, serverPublicKey);
 
-            SealedObject sealedChallangeForServer = new SealedObject(challange,challangeEncryptCipher);
+            SealedObject sealedChallangeForServer = new SealedObject(challange, challangeEncryptCipher);
 
             SealedObject serverAnswer = serverInterface.challangeServer(id, sealedChallangeForServer);
             Cipher decryptCipher = Cipher.getInstance(myPrivateKey.getAlgorithm());
-            decryptCipher.init(Cipher.DECRYPT_MODE,myPrivateKey);
+            decryptCipher.init(Cipher.DECRYPT_MODE, myPrivateKey);
 
-            ServerChallange serverChallange = (ServerChallange)serverAnswer.getObject(decryptCipher);
+            ServerChallange serverChallange = (ServerChallange) serverAnswer.getObject(decryptCipher);
 
             System.out.print("Server answered: " + serverChallange.getChallangeAnswer() + ", ");
-            if(serverChallange.getChallangeAnswer().equals(challange)){
+            if (serverChallange.getChallangeAnswer().equals(challange)) {
                 System.out.println("Server authenitcated succesfully");
-            }else
+            } else
                 return;
 
             sessionKey = serverChallange.getSessionKey();
 
             Cipher answerEncyrptCipher = Cipher.getInstance(sessionKey.getAlgorithm());
-            answerEncyrptCipher.init(Cipher.ENCRYPT_MODE,sessionKey);
-            SealedObject sealedAnswer = new SealedObject(serverChallange.getChallangeForClient(),answerEncyrptCipher);
+            answerEncyrptCipher.init(Cipher.ENCRYPT_MODE, sessionKey);
+            SealedObject sealedAnswer = new SealedObject(serverChallange.getChallangeForClient(), answerEncyrptCipher);
 
-            serverInterface.answerChallange(id,sealedAnswer);
-
-
-
-
-
+            serverInterface.answerChallange(id, sealedAnswer);
 
 
         } catch (IOException e) {
@@ -141,8 +180,7 @@ public class SellerClient {
     }
 
 
-
-    public static void main(String[] args){
+    public static void main(String[] args) {
         try {
 
             new SellerClient();

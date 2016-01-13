@@ -24,6 +24,7 @@ public class Replica extends ReceiverAdapter {
 
     HashMap<Integer,Auction> state = new HashMap<>();
 
+
     int counter;
 
 

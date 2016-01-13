@@ -13,10 +13,11 @@ public class KeyUtil {
     public static void main(String[] args){
 
 
-        //createKey(SERVER_KEY_NAME);
-        //createMultipleKeys(5);
+        createKey(SERVER_KEY_NAME);
+        createKey("razvan");
+        createKey("cristian");
+        createKey("becheru");
 
-        getPublicKey(String.valueOf(20));
 
 
     }

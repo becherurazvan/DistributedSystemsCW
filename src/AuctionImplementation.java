@@ -23,27 +23,45 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class AuctionImplementation extends java.rmi.server.UnicastRemoteObject
         implements SellerInterface, BidderInterface, Receiver {
 
+
+    // THE actual implementation of the front end
+
+
     JChannel channel;
     MuxRpcDispatcher dispatcher;
-    Replica r;
 
+
+    // A list of the currently active sessionKeys
     HashMap<String, SecretKey> sessionKeys;
+
+    // A list of challanges that are to be solved
     HashMap<String, ServerChallange> waitingToSolve;
 
+    HashMap<String,Boolean> chalangesCompleted;
+
+
+    // Counter for the auction ID so that it will always be unique
     AtomicInteger auctionIdCounter;
 
     public AuctionImplementation() throws RemoteException {
         sessionKeys = new HashMap<>();
         waitingToSolve = new HashMap<>();
+        chalangesCompleted = new HashMap<>();
+
         auctionIdCounter = new AtomicInteger(1);
         try {
             channel = new JChannel("toa.xml");
             channel.setReceiver(this);
+
+            // Discard it's own message, so that you dont get a null when you multicast a request
             channel.setDiscardOwnMessages(true);
             channel.setName("FrontEnd");
             channel.connect("Server");
 
             dispatcher = new MuxRpcDispatcher((short) 1, channel, this, this, this);
+
+            //All replicas hold a version of the counter too. in case the front end crashes but at least one replica doesnt,
+            // you can continue correctly numbering the auctions without having to close all replicas and start from 0
             RspList rspList = dispatcher.callRemoteMethods(null, "getIdCounter", new Object[]{}, new Class[]{}, new RequestOptions(ResponseMode.GET_FIRST, 5000));
             if (rspList.getFirst() != null) {
                 int counter = (int) rspList.getFirst(); // in case the front end stops, but replicas are not, the id counter, restart the server with the latest id counter from replicas
@@ -53,8 +71,6 @@ public class AuctionImplementation extends java.rmi.server.UnicastRemoteObject
                     System.out.println("Got the counter from a replplica " + (counter + 1));
                 }
             }
-
-
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -62,26 +78,55 @@ public class AuctionImplementation extends java.rmi.server.UnicastRemoteObject
 
     }
 
+
+    // When bidding, the requster signs all the data about his bidding with his private key
+    // we check of the signing is valid in order to allow the bidding to happend
+    // checking if the bid itself (value and bid id) is valid, is the task of each replica
     @Override
-    public String bid(SignedObject requesterId, int auctionId, double amount) throws RemoteException {
+    public String bid(SignedObject auctionDetails) throws RemoteException {
 
         try {
-            String userId = (String)requesterId.getObject();
+
+            Object[] details = (Object[]) auctionDetails.getObject();
+
+            String userId = (String) details[0];
+            int auctionId = (int) details[1];
+            double amount = (double) details[2];
+
+            if(!chalangesCompleted.containsKey(userId)){
+                return "You have not completed the handshake, unauthenticated";
+            }else{
+                 if(!chalangesCompleted.get(userId)){
+                     return "You have not yet solved the associated challange";
+                 }
+            }
+
+            System.out.println("Trying to bid " + amount + " on " + auctionId + " by " + userId);
+
+
             PublicKey requesterPublikKey = KeyUtil.getPublicKey(userId);
             Signature signature = Signature.getInstance("SHA1withRSA");
             signature.initVerify(requesterPublikKey);
-            boolean isTheRequesterVerified = requesterId.verify(requesterPublikKey, signature);
+            // check if the signature is valid
+            boolean isTheRequesterVerified = auctionDetails.verify(requesterPublikKey, signature);
 
             if (!isTheRequesterVerified)
                 return "Bidding unsuccesful, Message is signed with a different key, you cannot bid in someone else's name";
 
 
+            // multicast the request
+            RspList responseList = dispatcher.callRemoteMethods(null, "bid", new Object[]{auctionId, amount, userId}, new Class[]{int.class, double.class, String.class}, new RequestOptions(ResponseMode.GET_ALL, 5000));
+            //********************************************************************** was (parseInt(user id} and at clases instead of string ID
 
-            RspList responseList = dispatcher.callRemoteMethods(null, "bid", new Object[]{auctionId, amount,Integer.parseInt(userId)}, new Class[]{int.class,double.class,int.class}, new RequestOptions(ResponseMode.GET_ALL, 5000));
-
+            // if there is no response, we can assume that all replicas have crashed
             if (responseList.size() == 0)
                 return logCrash();
 
+
+            // Compute the majority of the responses and reply it to the client
+            // Normally if any respone is not part of the majority, we would request the
+            // replica to leave the group as it has been corupted (being a state machine, same input and same state should
+            // always result in the same output)
             HashMap<String, Integer> majority = new HashMap<>(); // hold all the responses, and how many of each.
 
             Set<Address> addresses = responseList.keySet();
@@ -99,14 +144,15 @@ public class AuctionImplementation extends java.rmi.server.UnicastRemoteObject
             for (String s : majority.keySet()) {
                 if (majority.get(s) > maxShowups) {
                     maxShowups = majority.get(s);
+                    System.out.println("resp :" + s);
                     majorityResponse = s;
                 }
             }
             return majorityResponse;
 
 
-
-
+        } catch (BadPaddingException ex) {
+            return "You are not authenticated as the person who you say you are";
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -114,12 +160,18 @@ public class AuctionImplementation extends java.rmi.server.UnicastRemoteObject
 
     }
 
+
+    // When adding a new auction, the auction is encyrpted with the the session key that the user
+    // This guarantees that the user that tries to make the request, is the one that we already
+    // had the handshake with
     @Override
     public String createListing(String userId, SealedObject sealedAuction) throws RemoteException {
         p(userId + " is trying to create an Auction");
 
 
-        // TO DO discard if auction has an set ID, it has been tempered with
+
+
+        // if there is no key associated with this user, it means that he has not yet authenticated
         if (!sessionKeys.containsKey(userId)) {
             System.out.println(userId + " is not authenticated, ignoring the request");
             return "You are not authenticated";
@@ -161,8 +213,12 @@ public class AuctionImplementation extends java.rmi.server.UnicastRemoteObject
         try {
             RspList rspList = dispatcher.callRemoteMethods(null, "addAuction", new Object[]{a}, new Class[]{Auction.class}, new RequestOptions(ResponseMode.GET_ALL, 5000));
             Set<Address> addresses = rspList.keySet();
+            Boolean[] answers = new Boolean[rspList.size()];
+            int c = 0;
             for (Address addr : addresses) {
+
                 Boolean response = (Boolean) rspList.get(addr).getValue();
+
 
             }
             if (rspList.size() == 0)
@@ -183,30 +239,47 @@ public class AuctionImplementation extends java.rmi.server.UnicastRemoteObject
     }
 
 
-    //TO DO FIX
+    // When canceling an auction, the client must sign his ID to profe that he is the person he says he is
+    // Only the one that cread the auction can close it
     @Override
     public String cancelAuction(SignedObject signedId, int auctionId) throws RemoteException {
 
         try {
+
+            //  read the auction with the givven id from one replica
             RspList rspList = dispatcher.callRemoteMethods(null, "getAuction", new Object[]{auctionId}, new Class[]{int.class}, new RequestOptions(ResponseMode.GET_FIRST, 5000));
             Auction a = (Auction) rspList.getFirst();
-            int trueOwner = a.getOwnerId();
+            String trueOwner = a.getOwnerId();  // **********************************************************************
             System.out.println("Someone is trying to close auction " + auctionId + " , the true owner is " + trueOwner);
 
 
-            System.err.println("Trying to get the session key of the user with id " + trueOwner + " \n " + sessionKeys.keySet());
-            PublicKey trueOwnerPublicKey = KeyUtil.getPublicKey(String.valueOf(trueOwner));
+            System.out.println("Trying to get the session key of the user with id " + trueOwner + " \n " + sessionKeys.keySet());
+            PublicKey trueOwnerPublicKey = KeyUtil.getPublicKey(trueOwner); // ********************************************************************** era String.valueOf(true owner)
 
             Signature signature = Signature.getInstance("SHA1withRSA");
             signature.initVerify(trueOwnerPublicKey);
             boolean isTheRequesterTheOwner = signedId.verify(trueOwnerPublicKey, signature);
+            String requesterId = (String)signedId.getObject();
 
+
+            if(!chalangesCompleted.containsKey(requesterId)){
+                return "You have not completed the handshake, unauthenticated";
+            }else{
+                if(!chalangesCompleted.get(requesterId)){
+                    return "You have not yet solved the associated challange";
+                }
+            }
+
+
+            // if the one that made the request is not the true owner, just discard his request
             if (isTheRequesterTheOwner) {
                 System.out.println("The requester is the true owner, stoping the auction " + a.getItemName());
-                RspList responseList = dispatcher.callRemoteMethods(null, "closeAuction", new Object[]{trueOwner, auctionId}, new Class[]{int.class, int.class}, new RequestOptions(ResponseMode.GET_ALL, 5000));
+                RspList responseList = dispatcher.callRemoteMethods(null, "closeAuction", new Object[]{requesterId, auctionId}, new Class[]{String.class, int.class}, new RequestOptions(ResponseMode.GET_ALL, 5000));
+                // ********************************************************************** la classa era int.class int.class
 
                 if (rspList.size() == 0)
                     return logCrash();
+
 
                 HashMap<String, Integer> majority = new HashMap<>(); // hold all the responses, and how many of each.
 
@@ -237,12 +310,16 @@ public class AuctionImplementation extends java.rmi.server.UnicastRemoteObject
             }
 
 
+        } catch (BadPaddingException ex) {
+            return "You are not authenticated as the person who you say you are";
         } catch (Exception e) {
             e.printStackTrace();
         }
-        return "";// r.closeAuction(1, auctionId);
+        return "Unexpected Error has occured";// r.closeAuction(1, auctionId);
     }
 
+
+    // This just reads all the auctions in a table format from a single replica (as it is a read operation)
     @Override
     public String getAllAuctions() throws RemoteException {
 
@@ -286,6 +363,7 @@ public class AuctionImplementation extends java.rmi.server.UnicastRemoteObject
         ServerChallange serverChallange = new ServerChallange(answerToChallange); // create a response for the challanger that is made of the answer to his challange, a challange for him, and a session key
 
         waitingToSolve.put(id, serverChallange);
+        chalangesCompleted.put(id,false);
 
         SealedObject response = null;
         try {
@@ -317,12 +395,15 @@ public class AuctionImplementation extends java.rmi.server.UnicastRemoteObject
             String answer = (String) response.getObject(decryptCipher);
             if (answer.equals(challange.getChallangeForClient())) {
                 System.out.println("Client's identity confirmed");
+                chalangesCompleted.put(id,true);
                 sessionKeys.put(id, challange.getSessionKey());
                 waitingToSolve.remove(id);
                 return true;
             }
 
 
+        } catch (BadPaddingException ex) {
+            System.out.println("Another user is trying to solve " + id + "'s challange");
         } catch (Exception e) {
             e.printStackTrace();
         }

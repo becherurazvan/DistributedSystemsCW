@@ -20,21 +20,32 @@ import java.util.Random;
 public class Replica extends ReceiverAdapter {
 
     private JChannel channel;
+
     private RpcDispatcher dispatcher;
 
+    // The replicas hold a view of the auctioning data, each auction has an id of itself and that is the way you get one from the list
     HashMap<Integer,Auction> state = new HashMap<>();
-
-
+    // The counter is used to make sure that every new auction will have a unique ID
     int counter;
 
-
+    // Used only for printing
     String replicaId;
 
     public Replica() throws Exception {
 
+
+        // toa.xml includes Total Ordering Anycast in the protocol stack, That is
+                // your message is sent to with anycast to a list of users in Total order
+                // this may not be the best solution when you will use all addresses as destination
+                // for most of your request
+        //squencer.xml includes Total Ordering Mulitcast, That is an multicast message is sent to the coordinator
+                // that will then multicast the message to all other members
+
+
         channel = new JChannel("toa.xml");
         channel.setReceiver(this);
 
+        // set the name of the replica
         Random rnd = new Random();
         replicaId = "Replica_" +  rnd.nextInt(10000);
 
@@ -44,11 +55,15 @@ public class Replica extends ReceiverAdapter {
         View view = channel.getView();
         List<Address> addresses = view.getMembers();
 
+
+        // try to get the state from the coordinator
+        // it might happend that the coordinator is the front end, so getting the state will fail
+        // therefore if that happend, try to get the state from the next member
         for(Address a : addresses)
         {
 
             try {
-                channel.getState(a,10000);
+                channel.getState(a,5000);
 
             } catch (Exception e) {
                 System.err.println("---Cannot get state from: " + a.toString());
@@ -63,12 +78,19 @@ public class Replica extends ReceiverAdapter {
 
             break;
         }
+
+
+
+        //Use Mux (multiplexed ) dispatcher instead of the simple one
+        //because the simple one will block and you wont be able to get
+        //any more messages (even with flushing)
         dispatcher = new MuxRpcDispatcher((short)1,channel,this,this,this);
 
 
         p("Started succesfuly!");
 
     }
+
 
 
 
@@ -81,16 +103,16 @@ public class Replica extends ReceiverAdapter {
         return true;
     }
 
-    public String bid(int auctionId,double value, int bidderId){
+    public String bid(int auctionId,double value, String bidderId){ // **********************************************************************
         if(state.containsKey(auctionId)){
-            return state.get(auctionId).bid(value, bidderId);
+            return state.get(auctionId).bid(value, bidderId); // **********************************************************************
         }else{
             return "No such auction exists";
         }
     }
 
 
-    public String closeAuction(int clientId, int auctionId){
+    public String closeAuction(String clientId, int auctionId){ // **********************************************************************
         if(state.containsKey(auctionId)) {
             return state.get(auctionId).stop(clientId);
         }else{
@@ -135,18 +157,13 @@ public class Replica extends ReceiverAdapter {
     }
     @Override
     public void getState(OutputStream output) throws Exception {
-
-
         synchronized (state) {
             Util.objectToStream(state, new DataOutputStream(output));
         }
-
     }
+
     @Override
     public void setState(InputStream input) throws Exception {
-
-
-
         HashMap<Integer,Auction> hm = (HashMap) Util.objectFromStream(new DataInputStream(input));
         synchronized (state) {
             state.clear();
@@ -154,6 +171,7 @@ public class Replica extends ReceiverAdapter {
         }
         p("Done getting the state!");
     }
+
     @Override
     public void viewAccepted(View view) {
         System.out.println(view.toString());

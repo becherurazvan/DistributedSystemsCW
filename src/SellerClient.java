@@ -27,6 +27,7 @@ public class SellerClient extends Client {
         super();
     }
 
+
     @Override
     protected void inputDetected(List<String> input) {
         switch (input.get(0)) {
@@ -41,17 +42,35 @@ public class SellerClient extends Client {
                 else if (input.size() > 3 && !isDouble(input.get(3)))
                     System.err.println(input.get(3) + " --> minimum price needs to be a number");
                 else {
-
-                    if (input.size() > 3 && Double.parseDouble(input.get(3)) < Double.parseDouble(input.get(2))) {
-                        System.err.println("Minimum price cannot be lower than starting price, you can just not add it");
+                    try {
+                        if (input.size() > 3 && Double.parseDouble(input.get(3)) < Double.parseDouble(input.get(2))) {
+                            System.err.println("Minimum price cannot be lower than starting price, you can just not add it");
+                            break;
+                        }
+                    } catch (NumberFormatException e) {
+                        System.out.println("Wrong Formating, try again");
                         break;
                     }
                     if (input.size() > 3) {
-                        String response = addAuction(input.get(1), Double.parseDouble(input.get(2)), Double.parseDouble(input.get(3)));
-                        System.out.println(response);
+                        try {
+                            if (Double.parseDouble(input.get(2)) <= 0) {
+                                System.out.println("Starting price must be bigger than 0");
+                                break;
+                            }
+                            String response = addAuction(input.get(1), Double.parseDouble(input.get(2)), Double.parseDouble(input.get(3)));
+                            System.out.println(response);
+                        } catch (NumberFormatException e) {
+                            System.out.println("Wrong Formating, try again");
+                            break;
+                        }
                     } else {
-                        String response = addAuction(input.get(1), Double.parseDouble(input.get(2)), Double.parseDouble(input.get(2))); // if no min price is set, set it to starting price
-                        System.out.println(response);
+                        try {
+                            String response = addAuction(input.get(1), Double.parseDouble(input.get(2)), Double.parseDouble(input.get(2))); // if no min price is set, set it to starting price
+                            System.out.println(response);
+                        } catch (NumberFormatException e) {
+                            System.out.println("Wrong Formating, try again");
+                            break;
+                        }
                     }
                 }
 
@@ -66,9 +85,15 @@ public class SellerClient extends Client {
                     System.err.println(input.get(1) + " --> auction id must be a number");
                     break;
                 }
-                String response = cancelAuction(Integer.parseInt(input.get(1)));
-                System.out.println(response);
-                break;
+                try {
+                    String response = cancelAuction(Integer.parseInt(input.get(1)));
+                    System.out.println(response);
+                    break;
+                } catch (NumberFormatException e) {
+                    System.out.println("Wrong Formating, try again");
+                    break;
+                }
+
             case "list_auctions":
                 try {
                     System.out.println(serverInterface.getAllAuctions());
@@ -76,6 +101,17 @@ public class SellerClient extends Client {
                     e.printStackTrace();
                 }
                 break;
+            case "spamAuctions":
+
+                int i =0;
+                while(true){
+                    try {
+                        Thread.sleep(100);
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
+                    }
+                    System.out.println(addAuction("SpamAuciton_"+i,10,i));
+                }
             default:
                 System.err.println("No such command, try: add_auction -name -starting price -minimum price , close_auction -auction id, list_auctions");
 
@@ -85,7 +121,7 @@ public class SellerClient extends Client {
     public String addAuction(String itemName, double startingPrice, double minimumPrice) {
         String response = "No response";
         try {
-            Auction a = new Auction(itemName, startingPrice, minimumPrice, ConvertUtils.getAsInt(id));
+            Auction a = new Auction(itemName, startingPrice, minimumPrice, id);
             Cipher cipher = Cipher.getInstance(sessionKey.getAlgorithm());
             cipher.init(Cipher.ENCRYPT_MODE, sessionKey);
             SealedObject sealedAuction = new SealedObject(a, cipher);
@@ -106,7 +142,7 @@ public class SellerClient extends Client {
             signature.initSign(myPrivateKey);
 
 
-            SignedObject signedId = new SignedObject(auctionId, myPrivateKey, signature);
+            SignedObject signedId = new SignedObject(id, myPrivateKey, signature);
             response = "Trying to cancel auction with id " + auctionId + " --- " + serverInterface.cancelAuction(signedId, auctionId);
 
         } catch (Exception e) {

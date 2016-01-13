@@ -48,6 +48,9 @@ public class BidClient extends Client {
                     System.out.println(response);
                 } catch (RemoteException e) {
                     e.printStackTrace();
+                }catch(NumberFormatException e){
+                    System.out.println("Wrong Formating, try again");
+                    break;
                 } catch (Exception e) {
                     e.printStackTrace();
                 }
@@ -59,6 +62,7 @@ public class BidClient extends Client {
                     e.printStackTrace();
                 }
                 break;
+
             default:
                 System.err.println("No such command, try: bid --bid_id --bid_value, list_auctions");
 
@@ -69,8 +73,10 @@ public class BidClient extends Client {
 
         Signature signature = Signature.getInstance("SHA1withRSA");
         signature.initSign(myPrivateKey);
-        SignedObject signedId = new SignedObject(id, myPrivateKey, signature);
-        return   bidderInterface.bid(signedId, auctionId, value);
+
+        Object[] bidDetails = new Object[]{id,auctionId,value};
+        SignedObject signedDetails = new SignedObject(bidDetails, myPrivateKey, signature);
+        return   bidderInterface.bid(signedDetails);
     }
 
 
